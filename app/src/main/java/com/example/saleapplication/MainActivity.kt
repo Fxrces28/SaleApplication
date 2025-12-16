@@ -56,18 +56,27 @@ import com.google.gson.annotations.SerializedName
 import retrofit2.http.GET
 import retrofit2.http.Query
 import androidx.compose.material3.CircularProgressIndicator
-import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import androidx.compose.material.icons.filled.Refresh
-
 import androidx.compose.material.icons.filled.DateRange
-
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import java.io.ByteArrayInputStream
+
+import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.net.Uri
+import retrofit2.http.Path
+
+import java.text.SimpleDateFormat
+import java.util.Locale
+data class ImagesResponse(
+    val id: Long,
+    val image: String
+)
 
 data class ProductsResponse(
     val content: List<ApiProduct>,
@@ -153,6 +162,64 @@ data class ProductReadDTO(
     val stockQuantity: Int
 )
 
+// Добавьте в существующие data classes
+
+data class ReviewResponse(
+    @SerializedName("content")
+    val content: List<Review>,
+    @SerializedName("totalElements")
+    val totalElements: Int,
+    @SerializedName("totalPages")
+    val totalPages: Int,
+    @SerializedName("number")
+    val number: Int,
+    @SerializedName("size")
+    val size: Int,
+    @SerializedName("first")
+    val first: Boolean,
+    @SerializedName("last")
+    val last: Boolean,
+    @SerializedName("empty")
+    val empty: Boolean
+)
+
+data class Review(
+    @SerializedName("id")
+    val id: Long,
+    @SerializedName("username")
+    val username: String,
+    @SerializedName("productId")
+    val productId: Long,
+    @SerializedName("text")
+    val text: String,
+    @SerializedName("rating")
+    val rating: Int,
+    @SerializedName("createdAt")
+    val createdAt: String,
+    @SerializedName("updatedAt")
+    val updatedAt: String
+)
+
+data class ReviewUser(
+    @SerializedName("id")
+    val id: String,
+    @SerializedName("username")
+    val username: String,
+    @SerializedName("firstName")
+    val firstName: String,
+    @SerializedName("lastName")
+    val lastName: String
+)
+
+data class CreateReviewRequest(
+    @SerializedName("productId")
+    val productId: Long,
+    @SerializedName("text")
+    val text: String,
+    @SerializedName("rating")
+    val rating: Int
+)
+
 data class PaymentInfo(
     val paymentId: Long,
     val orderId: Long,
@@ -176,7 +243,19 @@ data class ApiProduct(
     val price: Double,
 
     @SerializedName("stockQuantity")
-    val stockQuantity: Int
+    val stockQuantity: Int,
+
+    @SerializedName("height")
+    val height: Int? = null, // Добавьте это поле
+
+    @SerializedName("width")
+    val width: Int? = null,   // Добавьте это поле
+
+    @SerializedName("color") // Добавляем цвет
+    val color: String? = null,
+
+    @SerializedName("averageRating") // Добавляем средний рейтинг
+    val averageRating: Double? = null
 
 )
 
@@ -195,6 +274,40 @@ data class LoginRequest(
     val password: String
 )
 
+data class PaymentResponse(
+    val id: Long,
+    val order: OrderForPayment,
+    val amount: Int,
+    val currency: String,
+    val status: String,
+    val transactionId: String?,
+    val confirmationUrl: String
+)
+
+data class OrderForPayment(
+    val id: Long,
+    val user: UserInfo,
+    val totalPrice: Int,
+    val status: String,
+    val shippingAddress: String,
+    val phoneNumber: String,
+    val createdAt: String,
+    val orderItems: List<OrderItemForPayment>
+)
+
+data class OrderItemForPayment(
+    val id: Long,
+    val product: ProductForPayment,
+    val quantity: Int
+)
+
+data class ProductForPayment(
+    val id: Long,
+    val name: String,
+    val description: String,
+    val price: Int,
+    val stockQuantity: Int
+)
 
 // API Service interface - измените возвращаемые типы
 interface ApiService {
@@ -220,7 +333,99 @@ interface ApiService {
     suspend fun createOrderFromCart(@Body request: CreateOrderRequest): OrderResponse
     @GET("api/v1/orders/my-orders")
     suspend fun getMyOrders(): List<OrderResponse>
+
+    @GET("api/v1/images/allByProduct")
+    suspend fun getProductImages(@Query("productId") productId: Long): ImagesResponse
+
+    @POST("api/v1/payments/create/{orderId}")
+    suspend fun createPayment(@Path("orderId") orderId: Long): PaymentResponse
+
+    @GET("api/v1/reviews/product/{productId}")
+    suspend fun getProductReviews(
+        @Path("productId") productId: Long,
+        @Query("page") page: Int = 0,
+        @Query("size") size: Int = 10
+    ): ReviewResponse
+
+    @POST("api/v1/reviews")
+    suspend fun createReview(@Body request: CreateReviewRequest): Review
+
 }
+
+
+
+object ImageUtils {
+    fun base64ToImageBitmap(base64String: String): ImageBitmap? {
+        return try {
+            println("Base64 string received, length: ${base64String.length}")
+
+            // Если строка слишком короткая, возможно это ссылка или ошибка
+            if (base64String.length < 100) {
+                println("Base64 string is too short, might be an error or URL")
+                return null
+            }
+
+            // Проверяем наличие префикса
+            val pureBase64 = if (base64String.startsWith("data:image")) {
+                base64String.substringAfter(",")
+            } else if (base64String.startsWith("{")) {
+                // Возможно это JSON, попробуем распарсить
+                println("String starts with '{', might be JSON")
+                return null
+            } else {
+                base64String
+            }
+
+            println("Processing base64 of length: ${pureBase64.length}")
+
+            // Проверяем, что это валидный base64
+            if (!isValidBase64(pureBase64)) {
+                println("Not a valid base64 string")
+                return null
+            }
+
+            val decodedBytes = android.util.Base64.decode(pureBase64, android.util.Base64.DEFAULT)
+            println("Decoded bytes: ${decodedBytes.size} bytes")
+
+            if (decodedBytes.isEmpty()) {
+                println("Decoded bytes are empty")
+                return null
+            }
+
+            val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+
+            if (bitmap == null) {
+                println("Failed to decode bitmap from bytes")
+                // Попробуем другой метод
+                val inputStream = ByteArrayInputStream(decodedBytes)
+                val bitmap2 = BitmapFactory.decodeStream(inputStream)
+                if (bitmap2 == null) {
+                    println("Also failed with decodeStream")
+                    return null
+                }
+                println("Successfully decoded with decodeStream")
+                return bitmap2.asImageBitmap()
+            }
+
+            println("Bitmap created: ${bitmap.width}x${bitmap.height}")
+            bitmap.asImageBitmap()
+        } catch (e: Exception) {
+            println("Error decoding base64 image: ${e.message}")
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun isValidBase64(str: String): Boolean {
+        return try {
+            android.util.Base64.decode(str, android.util.Base64.DEFAULT)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+}
+
 
 // Кастомный конвертер для обработки строкового ответа
 class StringConverterFactory : Converter.Factory() {
@@ -320,7 +525,7 @@ fun MainApp() {
                         onClick = { currentScreen = "products" },
                         icon = {
                             Icon(
-                                painter = painterResource(id = R.drawable.pencil),
+                                painter = painterResource(id = R.drawable.orders),
                                 contentDescription = "Товары"
                             )
                         },
@@ -354,7 +559,7 @@ fun MainApp() {
                                 }
                             ) {
                                 Icon(
-                                    painter = painterResource(id = R.drawable.orders),
+                                    painter = painterResource(id = R.drawable.cart),
                                     contentDescription = "Корзина"
                                 )
                             }
@@ -367,10 +572,18 @@ fun MainApp() {
                             currentScreen = if (isLoggedIn) "orders" else "login"
                         },
                         icon = {
-                            Icon(
-                                painter = painterResource(id = R.drawable.orders),
-                                contentDescription = if (isLoggedIn) "Мои заказы" else "Вход"
-                            )
+                            if (isLoggedIn) {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.icon_orders),
+                                    contentDescription = "Мои заказы"
+                                )
+                            }
+                            else {
+                                Icon(
+                                    painter = painterResource(id = R.drawable.out),
+                                    contentDescription = "Вход"
+                                )
+                            }
                         },
                         label = { Text(if (isLoggedIn) "Заказы" else "Вход") }
                     )
@@ -716,8 +929,8 @@ fun OrderCard(order: OrderResponse) {
                         },
                         color = when (order.status) {
                             "PENDING" -> Color(0xFFFF9800)
-                            "PROCESSING" -> Color(0xFFFFC107)
-                            "SHIPPED" -> Color(0xFF2196F3)
+                            "PROCESSING" -> Color(0xFFA7D8E9)
+                            "SHIPPED" -> Color(0xFFD5A7E9)
                             "DELIVERED" -> Color(0xFF4CAF50)
                             "CANCELLED" -> Color(0xFFF44336)
                             else -> Color.Gray
@@ -750,19 +963,6 @@ fun OrderCard(order: OrderResponse) {
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                // Сумма заказа
-                Row(verticalAlignment = Alignment.CenterVertically) {
-
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Сумма: ${order.totalPrice} ₽",
-                        fontSize = 14.sp,
-                        color = Color.Gray
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(4.dp))
-
                 // Адрес доставки
                 Row(verticalAlignment = Alignment.Top) {
                     Icon(
@@ -777,6 +977,19 @@ fun OrderCard(order: OrderResponse) {
                         fontSize = 14.sp,
                         color = Color.Gray,
                         maxLines = if (expanded) Int.MAX_VALUE else 1
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Сумма заказа
+                Row(verticalAlignment = Alignment.CenterVertically) {
+
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Сумма: ${order.totalPrice} ₽",
+                        fontSize = 14.sp,
+                        color = Color.Gray
                     )
                 }
 
@@ -816,9 +1029,7 @@ fun OrderCard(order: OrderResponse) {
                     Spacer(modifier = Modifier.height(12.dp))
 
                     // Статус оплаты
-                    if (order.payment != null) {
-                        PaymentStatus(order.payment)
-                    }
+                    PaymentStatus(order.payment, order.id)
                 }
             }
         }
@@ -866,11 +1077,75 @@ fun OrderItemRow(item: OrderItemResponse) {
 }
 
 @Composable
-fun PaymentStatus(payment: PaymentInfo) {
+fun PaymentStatus(payment: PaymentInfo?, orderId: Long) {
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    // Функция для получения ссылки на оплату
+    fun getPaymentUrl(): String? {
+        return payment?.confirmationUrl?.takeIf { it.isNotEmpty() }
+    }
+
+    // Функция для создания платежа
+    fun createPayment() {
+        coroutineScope.launch {
+            try {
+                isLoading = true
+                errorMessage = null
+
+                // Создаем платеж
+                val paymentResponse = RetrofitClient.instance.createPayment(orderId)
+
+                // Получаем ссылку для оплаты
+                val url = paymentResponse.confirmationUrl
+
+                // Открываем ссылку в браузере
+                if (url.isNotEmpty()) {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    context.startActivity(intent)
+                } else {
+                    errorMessage = "Ссылка для оплаты не получена"
+                }
+
+            } catch (e: Exception) {
+                errorMessage = when {
+                    e is java.net.ConnectException -> "Не удалось подключиться к серверу"
+                    e is java.net.SocketTimeoutException -> "Таймаут подключения"
+                    e is retrofit2.HttpException -> {
+                        when (e.code()) {
+                            401 -> "Требуется авторизация"
+                            403 -> "Доступ запрещен"
+                            404 -> "Заказ не найден"
+                            400 -> "Невозможно создать платеж для этого заказа"
+                            500 -> "Ошибка сервера при создании платежа"
+                            else -> "Ошибка сервера: ${e.code()}"
+                        }
+                    }
+                    else -> "Ошибка создания платежа: ${e.message}"
+                }
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    // Функция для открытия существующей ссылки оплаты
+    fun openExistingPayment() {
+        val url = getPaymentUrl()
+        if (url != null && url.isNotEmpty()) {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            context.startActivity(intent)
+        } else {
+            errorMessage = "Ссылка для оплаты недоступна"
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = when (payment.status) {
+            containerColor = when (payment?.status) {
                 "SUCCEEDED" -> Color(0xFF4CAF50).copy(alpha = 0.1f)
                 "PENDING" -> Color(0xFFFF9800).copy(alpha = 0.1f)
                 "CANCELED" -> Color(0xFFF44336).copy(alpha = 0.1f)
@@ -891,40 +1166,127 @@ fun PaymentStatus(payment: PaymentInfo) {
                     color = Color.Black
                 )
 
+                payment?.let {
+                    Text(
+                        text = when (it.status) {
+                            "SUCCEEDED" -> "Оплачено"
+                            "PENDING" -> "Ожидает оплаты"
+                            "CANCELED" -> "Отменена"
+                            else -> it.status
+                        },
+                        color = when (it.status) {
+                            "SUCCEEDED" -> Color(0xFF4CAF50)
+                            "PENDING" -> Color(0xFFFF9800)
+                            "CANCELED" -> Color(0xFFF44336)
+                            else -> Color.Gray
+                        },
+                        fontWeight = FontWeight.Medium
+                    )
+                } ?: run {
+                    Text(
+                        text = "Не создан",
+                        color = Color.Gray,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Если есть информация о платеже
+            payment?.let {
                 Text(
-                    text = when (payment.status) {
-                        "SUCCEEDED" -> "Оплачено"
-                        "PENDING" -> "Ожидает оплаты"
-                        "CANCELED" -> "Отменена"
-                        else -> payment.status
-                    },
-                    color = when (payment.status) {
-                        "SUCCEEDED" -> Color(0xFF4CAF50)
-                        "PENDING" -> Color(0xFFFF9800)
-                        "CANCELED" -> Color(0xFFF44336)
-                        else -> Color.Gray
-                    },
-                    fontWeight = FontWeight.Medium
+                    text = "Сумма: ${payment.amount} ${payment.currency}",
+                    fontSize = 14.sp,
+                    color = Color.Gray
+                )
+
+                if (payment.transactionId != null) {
+                    Text(
+                        text = "ID транзакции: ${payment.transactionId}",
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+
+            // Показать ошибку, если есть
+            errorMessage?.let { message ->
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = message,
+                    color = Color.Red,
+                    fontSize = 12.sp
                 )
             }
 
-            Text(
-                text = "Сумма: ${payment.amount} ${payment.currency}",
-                fontSize = 14.sp,
-                color = Color.Gray
-            )
+            // Кнопки действий
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Кнопка для перехода к оплате (если статус PENDING)
-            if (payment.status == "PENDING" && payment.confirmationUrl.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = {
-                        // TODO: Открыть confirmationUrl в браузере
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
-                ) {
-                    Text("Перейти к оплате")
+            when {
+                payment == null -> {
+                    // Если платеж не создан - кнопка "Создать оплату"
+                    Button(
+                        onClick = { createPayment() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFC8744F)
+                        ),
+                        enabled = !isLoading
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Создать оплату", color = Color.White)
+                        }
+                    }
+                }
+                payment.status == "PENDING" -> {
+                    // Если платеж в ожидании - только кнопка "Открыть страницу оплаты"
+                    val paymentUrl = getPaymentUrl()
+                    if (paymentUrl != null) {
+                        Button(
+                            onClick = { openExistingPayment() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF2196F3)
+                            )
+                        ) {
+                            Text("Открыть страницу оплаты", color = Color.White)
+                        }
+                    }
+                }
+                payment.status == "SUCCEEDED" -> {
+                    Text(
+                        text = "✓ Оплата успешно завершена",
+                        color = Color(0xFF4CAF50),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+                payment.status == "CANCELED" -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "✗ Платеж отменен",
+                            color = Color(0xFFF44336),
+                            fontWeight = FontWeight.Medium
+                        )
+                        Button(
+                            onClick = { createPayment() },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFC8744F)
+                            ),
+                            enabled = !isLoading
+                        ) {
+                            Text("Повторить оплату")
+                        }
+                    }
                 }
             }
         }
@@ -1007,14 +1369,9 @@ fun SwipeImageSlider() {
             .fillMaxWidth()
             .height(180.dp)
             .padding(horizontal = 16.dp)
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures { _, dragAmount ->
-                    if (dragAmount > 50) {
-                        currentIndex = if (currentIndex > 0) currentIndex - 1 else images.lastIndex
-                    } else if (dragAmount < -50) {
-                        currentIndex = if (currentIndex < images.lastIndex) currentIndex + 1 else 0
-                    }
-                }
+            .clickable {
+                // По нажатию меняем картинку
+                currentIndex = (currentIndex + 1) % images.size
             },
         contentAlignment = Alignment.Center
     ) {
@@ -1024,6 +1381,26 @@ fun SwipeImageSlider() {
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
+
+        // Необязательно: индикатор текущего слайда
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            repeat(images.size) { index ->
+                Box(
+                    modifier = Modifier
+                        .padding(horizontal = 4.dp)
+                        .size(8.dp)
+                        .background(
+                            color = if (index == currentIndex) Color.White else Color.Gray,
+                            shape = CircleShape
+                        )
+                )
+            }
+        }
     }
 }
 
@@ -1074,57 +1451,26 @@ fun ProductsScreen(
     currentUserName: String = "",
     onLoginRequired: () -> Unit = {}
 ) {
-
     var products by remember { mutableStateOf<List<Product>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var currentPage by remember { mutableStateOf(0) }
     var hasMore by remember { mutableStateOf(true) }
-    // Добавляем состояние для загрузки корзины
-    var isCartLoading by remember { mutableStateOf(false) }
-    var cartError by remember { mutableStateOf<String?>(null) }
+    // Добавляем состояние для выбранного товара
+    var selectedProduct by remember { mutableStateOf<Product?>(null) }
+
     // Для отзывов
     data class Review(val name: String, val text: String, val stars: Int, val date: String)
-    var reviews by remember { mutableStateOf(
-        mutableListOf(
-            Review("Иван", "Отличная штора, всем доволен!", 5, "08.11.2025"),
-            Review("Мария", "Цвет совпал с описанием, рекомендую.", 4, "07.11.2025"),
-            Review("Алексей", "Быстрая доставка и хорошее качество.", 5, "06.11.2025")
-        )
-    ) }
     var userReview by remember { mutableStateOf("") }
     var userStars by remember { mutableStateOf(0) }
     var showReviewSent by remember { mutableStateOf(false) }
     var showReviewLoginRequired by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
-    // Загрузка корзины при изменении статуса авторизации
-    fun loadCart() {
-        if (!isLoggedIn) return
-
-        coroutineScope.launch {
-            try {
-                isCartLoading = true
-                val cartResponse = RetrofitClient.instance.getCart()
-                CartManager.updateFromResponse(cartResponse)
-            } catch (e: Exception) {
-                println("Cart loading error: ${e.message}")
-            } finally {
-                isCartLoading = false
-            }
-        }
-    }
-    LaunchedEffect(isLoggedIn) {
-        if (isLoggedIn) {
-            loadCart()
-        } else {
-            CartManager.clear()
-        }
-    }
 
     // Функция загрузки товаров
     fun loadProducts(page: Int = 0) {
-        coroutineScope.launch { // ← Используйте coroutineScope здесь
+        coroutineScope.launch {
             try {
                 isLoading = true
                 val response = RetrofitClient.instance.getProducts(
@@ -1138,9 +1484,13 @@ fun ProductsScreen(
                         id = apiProduct.id,
                         name = apiProduct.name,
                         description = apiProduct.description,
-                        price = apiProduct.price.toInt(),  // ← Конвертируем Double в Int
+                        price = apiProduct.price.toInt(),
                         stockQuantity = apiProduct.stockQuantity,
-                        image = if (apiProduct.id % 2 == 0L) android.R.drawable.ic_menu_gallery else android.R.drawable.ic_menu_camera
+                        height = apiProduct.height,
+                        width = apiProduct.width,
+                        color = apiProduct.color,
+                        averageRating = apiProduct.averageRating,
+                        image = android.R.drawable.ic_menu_gallery
                     )
                 }
 
@@ -1186,6 +1536,145 @@ fun ProductsScreen(
         }
     }
 
+    // Если выбран товар - показываем детальный экран
+    if (selectedProduct != null) {
+        ProductDetailScreen(
+            product = selectedProduct!!,
+            modifier = modifier,
+            onBackClick = { selectedProduct = null },
+            isLoggedIn = isLoggedIn,
+            onLoginRequired = onLoginRequired
+        )
+    } else {
+        // Показываем основной экран с товарами
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .background(CreamColor)
+        ) {
+            // Заголовок
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("Товары", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            }
+
+            // Загрузка или ошибка
+            if (isLoading && products.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Color(0xFFC8744F))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("Загрузка товаров...", color = Color.Gray)
+                    }
+                }
+            } else if (errorMessage != null && products.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.orders),
+                            contentDescription = "Ошибка",
+                            modifier = Modifier.size(64.dp),
+                            tint = Color.Gray
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = errorMessage!!,
+                            color = Color.Red,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 32.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = { loadProducts(0) },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
+                        ) {
+                            Text("Повторить")
+                        }
+                    }
+                }
+            } else {
+                // ОБЩИЙ ПРОКРУЧИВАЕМЫЙ КОНТЕНТ
+                LazyColumn(
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    // Сетка товаров
+                    items(products.chunked(2)) { rowProducts ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            // Первый товар в ряду
+                            ProductGridCard(
+                                product = rowProducts[0],
+                                modifier = Modifier.weight(1f),
+                                isLoggedIn = isLoggedIn,
+                                onLoginRequired = onLoginRequired,
+                                onProductClick = { product ->
+                                    selectedProduct = product
+                                }
+                            )
+
+                            // Второй товар в ряду (если есть)
+                            if (rowProducts.size > 1) {
+                                ProductGridCard(
+                                    product = rowProducts[1],
+                                    modifier = Modifier.weight(1f),
+                                    isLoggedIn = isLoggedIn,
+                                    onLoginRequired = onLoginRequired,
+                                    onProductClick = { product ->
+                                        selectedProduct = product
+                                    }
+                                )
+                            } else {
+                                // Пустое место, если товаров нечетное количество
+                                Spacer(modifier = Modifier.weight(1f))
+                            }
+                        }
+                    }
+
+                    // Индикатор загрузки следующей страницы
+                    if (hasMore) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoading) {
+                                    CircularProgressIndicator(color = Color(0xFFC8744F))
+                                } else {
+                                    // Автоматически загружаем следующую страницу при прокрутке
+                                    LaunchedEffect(Unit) {
+                                        loadNextPage()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Диалоги
     if (showReviewSent) {
         SuccessDialog(
             title = "Спасибо за отзыв!",
@@ -1198,239 +1687,6 @@ fun ProductsScreen(
         )
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .background(CreamColor)
-    ) {
-        // Заголовок
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("Товары", color = Color.Black, fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        }
-
-        // Загрузка или ошибка
-        if (isLoading && products.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Color(0xFFC8744F))
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text("Загрузка товаров...", color = Color.Gray)
-                }
-            }
-        } else if (errorMessage != null && products.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        painter = painterResource(id = R.drawable.orders),
-                        contentDescription = "Ошибка",
-                        modifier = Modifier.size(64.dp),
-                        tint = Color.Gray
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = errorMessage!!,
-                        color = Color.Red,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(horizontal = 32.dp)
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Button(
-                        onClick = { loadProducts(0) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
-                    ) {
-                        Text("Повторить")
-                    }
-                }
-            }
-        } else {
-            // ОБЩИЙ ПРОКРУЧИВАЕМЫЙ КОНТЕНТ
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                // Сетка товаров
-                items(products.chunked(2)) { rowProducts ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        // Первый товар в ряду
-                        ProductGridCard(
-                            product = rowProducts[0],
-                            modifier = Modifier.weight(1f),
-                            isLoggedIn = isLoggedIn,
-                            onLoginRequired = onLoginRequired
-                        )
-
-                        // Второй товар в ряду (если есть)
-                        if (rowProducts.size > 1) {
-                            ProductGridCard(
-                                product = rowProducts[1],  // ← ИСПРАВЛЕНО!
-                                modifier = Modifier.weight(1f),
-                                isLoggedIn = isLoggedIn,
-                                onLoginRequired = onLoginRequired
-                            )
-                        } else {
-                            // Пустое место, если товаров нечетное количество
-                            Spacer(modifier = Modifier.weight(1f))
-                        }
-                    }
-                }
-
-                // Индикатор загрузки следующей страницы
-                if (hasMore) {
-                    item {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = Color(0xFFC8744F))
-                            } else {
-                                // Автоматически загружаем следующую страницу при прокрутке
-                                LaunchedEffect(Unit) {
-                                    loadNextPage()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Блок отзывов
-                item {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp)
-                    ) {
-                        Text("Отзывы", fontSize = 22.sp, color = Color.Black, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        reviews.forEach { review ->
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp)
-                                    .background(Color(0x2BE8B598), RoundedCornerShape(8.dp))
-                                    .border(2.dp, Color(0xFFE8B598), RoundedCornerShape(8.dp))
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text(review.name, color = Color.Black, fontWeight = FontWeight.Bold)
-                                    Row {
-                                        repeat(review.stars) {
-                                            Icon(
-                                                Icons.Default.Star,
-                                                contentDescription = null,
-                                                tint = Color(0xFFFFC107),
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                        repeat(5 - review.stars) {
-                                            Icon(
-                                                Icons.Default.Star,
-                                                contentDescription = null,
-                                                tint = Color(0xFFE0E0E0),
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(review.date, fontSize = 12.sp, color = Color.Gray)
-                                    }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(review.text, color = Color.Black)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Text("Оставить отзыв", color = Color.Black, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-
-                        if (!isLoggedIn) {
-                            Text(
-                                text = "Для оставления отзыва необходимо войти в систему",
-                                color = Color.Gray,
-                                fontSize = 14.sp,
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            )
-                            Button(
-                                onClick = { showReviewLoginRequired = true },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
-                            ) {
-                                Text("Войти для отзыва", color = Color.White)
-                            }
-                        } else {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                for (i in 1..5) {
-                                    Icon(
-                                        imageVector = Icons.Default.Star,
-                                        contentDescription = "Рейтинг",
-                                        tint = if (i <= userStars) Color(0xFFFFC107) else Color(0xFFE0E0E0),
-                                        modifier = Modifier
-                                            .size(32.dp)
-                                            .clickable { userStars = i }
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Box {
-                                OutlinedTextField(
-                                    value = userReview,
-                                    onValueChange = { userReview = it },
-                                    placeholder = { Text("Напишите ваш отзыв") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    maxLines = 3
-                                )
-                                Button(
-                                    onClick = {
-                                        if (userReview.isNotBlank() && userStars > 0) {
-                                            reviews.add(0, Review(currentUserName, userReview, userStars, "08.11.2025"))
-                                            showReviewSent = true
-                                            userReview = ""
-                                            userStars = 0
-                                        }
-                                    },
-                                    shape = CircleShape,
-                                    modifier = Modifier
-                                        .align(Alignment.BottomEnd)
-                                        .padding(8.dp)
-                                        .size(40.dp),
-                                    contentPadding = PaddingValues(0.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8B598))
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ArrowForward,
-                                        contentDescription = "Отправить",
-                                        tint = Color(0xFFC8744F)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Диалог требования авторизации для отзыва
     if (showReviewLoginRequired) {
         AlertDialog(
             onDismissRequest = { showReviewLoginRequired = false },
@@ -1528,20 +1784,49 @@ object CartManager {
         cartItemCount = cartItems.sumOf { it.quantity }
     }
 }
+
+fun extractSizeFromName(name: String): Pair<Int?, Int?>? {
+    // Ищем паттерн типа "20x150" в названии
+    val pattern = Regex("""(\d+)[xX×](\d+)""")
+    val match = pattern.find(name)
+
+    return if (match != null && match.groupValues.size == 3) {
+        val width = match.groupValues[1].toIntOrNull()
+        val height = match.groupValues[2].toIntOrNull()
+        if (width != null && height != null) Pair(width, height) else null
+    } else {
+        null
+    }
+}
+
+fun getCleanProductName(name: String): String {
+    // Удаляем размеры из названия
+    val pattern = Regex("""\s*\d+[xX×]\d+\s*""")
+    return pattern.replace(name, "").trim()
+}
+
 @Composable
 fun ProductGridCard(
     product: Product,
     modifier: Modifier = Modifier,
     isLoggedIn: Boolean = false,
     onLoginRequired: () -> Unit = {},
-
-    onAddToCart: (Long, Int) -> Unit = { _, _ -> } // ← Измените сигнатуру
+    onProductClick: (Product) -> Unit = {} // Добавляем обработчик клика на карточку
 ) {
     var showQuantityDialog by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var productImage by remember { mutableStateOf<ImageBitmap?>(null) }
+    var isLoadingImage by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
     var showLoginRequiredDialog by remember { mutableStateOf(false) }
+
+    val cleanName = getCleanProductName(product.name)
+    val sizeFromName = extractSizeFromName(product.name)
+
+    // Используем размеры из полей product или из названия
+    val displayHeight = product.height ?: sizeFromName?.second
+    val displayWidth = product.width ?: sizeFromName?.first
 
     // Функция добавления в корзину
     fun addToCart(quantity: Int) {
@@ -1554,7 +1839,6 @@ fun ProductGridCard(
                     CartItemRequest(product.id, quantity)
                 )
                 CartManager.updateFromResponse(response)
-                // Можно показать Toast или Snackbar
             } catch (e: Exception) {
                 errorMessage = "Ошибка добавления в корзину: ${e.message}"
                 println("Add to cart error: ${e.message}")
@@ -1564,131 +1848,134 @@ fun ProductGridCard(
         }
     }
 
+    LaunchedEffect(product.id) {
+        if (!isLoadingImage) {
+            isLoadingImage = true
+            try {
+                val response = RetrofitClient.instance.getProductImages(product.id)
+                val imageBitmap = ImageUtils.base64ToImageBitmap(response.image)
+                productImage = imageBitmap
+            } catch (e: Exception) {
+                println("Error loading product image: ${e.message}")
+                println("Full error: ${e.stackTraceToString()}")
+            } finally {
+                isLoadingImage = false
+            }
+        }
+    }
+
     Card(
         modifier = modifier
-            .aspectRatio(1f),
+            .fillMaxWidth()
+            .height(250.dp)
+            .clickable {
+                onProductClick(product) // Обрабатываем клик на всю карточку
+            },
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFFD2C2B5))
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFE4C6))
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(8.dp)
         ) {
-            // Горизонтальная компоновка: текст слева, изображение справа
-            Row(
+            // Изображение
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
+                    .height(120.dp)
+                    .background(Color.White, RoundedCornerShape(8.dp))
+                    .border(1.dp, Color(0xFFE0E0E0), RoundedCornerShape(8.dp))
             ) {
-                // Текстовая часть слева
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 8.dp),
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    // Название товара
-                    Text(
-                        product.name,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = Color.Black,
-                        maxLines = 2,
-                        modifier = Modifier.fillMaxWidth()
+                if (productImage != null) {
+                    Image(
+                        bitmap = productImage!!,
+                        contentDescription = product.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    // Описание товара
-                    Text(
-                        product.description,
-                        fontSize = 10.sp,
-                        color = Color.Black,
-                        maxLines = 3,
-                        modifier = Modifier.fillMaxWidth()
+                } else {
+                    Image(
+                        painter = painterResource(id = product.image),
+                        contentDescription = product.name,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
                     )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // Цена
-                    Text(
-                        "${product.price} ₽",  //
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 16.sp,
-                        color = Color(0xFFC8744F)
-                    )
-
-                    Spacer(modifier = Modifier.height(4.dp))
-
-                    // Информация о наличии
-                    if (product.stockQuantity > 0) {
-                        Text(
-                            "✓ В наличии",
-                            fontSize = 10.sp,
-                            color = Color(0xFF4CAF50)
-                        )
-                    } else {
-                        Text(
-                            "✗ Нет в наличии",
-                            fontSize = 10.sp,
-                            color = Color.Red
-                        )
-                    }
                 }
+            }
 
-                // Изображение справа (квадратик)
-                Image(
-                    painter = painterResource(id = product.image),
-                    contentDescription = product.name,
-                    modifier = Modifier
-                        .size(80.dp),
-                    contentScale = ContentScale.Crop
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Название товара
+            Text(
+                text = cleanName,
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp,
+                color = Color.Black,
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Размеры (если есть)
+            if (displayHeight != null && displayWidth != null) {
+                Text(
+                    text = "${displayWidth}×${displayHeight} см",
+                    fontSize = 12.sp,
+                    color = Color.Gray,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Цена
+            Text(
+                text = "${product.price} ₽",
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+                color = Color(0xFFC8744F),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Информация о наличии
+            if (product.stockQuantity > 0) {
+                Text(
+                    text = "✓ В наличии",
+                    fontSize = 12.sp,
+                    color = Color(0xFF4CAF50),
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Text(
+                    text = "✗ Нет в наличии",
+                    fontSize = 12.sp,
+                    color = Color.Red,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
 
-            // Кнопка заказа внизу
-            Button(
-                onClick = {
-                    if (product.stockQuantity > 0) {
-                        if (isLoggedIn) {
-                            showQuantityDialog = true
-                        } else {
-                            showLoginRequiredDialog = true
-                        }
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(36.dp),
-                enabled = product.stockQuantity > 0 && !isLoading
-            ) {
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Text(
-                        if (product.stockQuantity > 0) "В корзину" else "Нет в наличии",
-                        color = Color.White,
-                        fontSize = 12.sp
-                    )
-                }
-            }
 
             // Показать ошибку, если есть
             errorMessage?.let { message ->
                 Text(
                     text = message,
                     color = Color.Red,
-                    fontSize = 10.sp
+                    fontSize = 10.sp,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
     }
+
+    // Диалоги
     if (showLoginRequiredDialog) {
         AlertDialog(
             onDismissRequest = { showLoginRequiredDialog = false },
@@ -1709,7 +1996,7 @@ fun ProductGridCard(
                 Button(
                     onClick = {
                         showLoginRequiredDialog = false
-                        onLoginRequired() // ← Переходим на логин только после подтверждения
+                        onLoginRequired()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
                 ) {
@@ -1727,7 +2014,6 @@ fun ProductGridCard(
         )
     }
 
-    // Диалог выбора количества
     if (showQuantityDialog) {
         QuantityDialog(
             productName = product.name,
@@ -1740,6 +2026,771 @@ fun ProductGridCard(
         )
     }
 }
+
+@Composable
+fun ProductDetailScreen(
+    product: Product,
+    modifier: Modifier = Modifier,
+    onBackClick: () -> Unit = {},
+    isLoggedIn: Boolean = false,
+    onLoginRequired: () -> Unit = {},
+    onAddToCart: (Long, Int) -> Unit = { _, _ -> }
+) {
+    var showQuantityDialog by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var productImage by remember { mutableStateOf<ImageBitmap?>(null) }
+    var isLoadingImage by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    var showLoginRequiredDialog by remember { mutableStateOf(false) }
+
+    // Состояния для отзывов
+    var reviews by remember { mutableStateOf<List<Review>>(emptyList()) }
+    var isLoadingReviews by remember { mutableStateOf(false) }
+    var reviewError by remember { mutableStateOf<String?>(null) }
+    var currentReviewPage by remember { mutableStateOf(0) }
+    var hasMoreReviews by remember { mutableStateOf(true) }
+
+    // Состояния для написания отзыва
+    var showReviewDialog by remember { mutableStateOf(false) }
+    var userReviewText by remember { mutableStateOf("") }
+    var userReviewRating by remember { mutableStateOf(5) }
+    var isSubmittingReview by remember { mutableStateOf(false) }
+    var showReviewSuccess by remember { mutableStateOf(false) }
+
+    // Функция добавления в корзину
+    fun addToCart(quantity: Int) {
+        isLoading = true
+        errorMessage = null
+
+        coroutineScope.launch {
+            try {
+                val response = RetrofitClient.instance.addToCart(
+                    CartItemRequest(product.id, quantity)
+                )
+                CartManager.updateFromResponse(response)
+            } catch (e: Exception) {
+                errorMessage = "Ошибка добавления в корзину: ${e.message}"
+                println("Add to cart error: ${e.message}")
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    // Функция загрузки отзывов
+    fun loadReviews(page: Int = 0) {
+        coroutineScope.launch {
+            try {
+                isLoadingReviews = true
+                val response = RetrofitClient.instance.getProductReviews(
+                    productId = product.id,
+                    page = page,
+                    size = 5
+                )
+
+                if (page == 0) {
+                    reviews = response.content
+                } else {
+                    reviews = reviews + response.content
+                }
+
+                hasMoreReviews = !response.last
+                currentReviewPage = page
+                reviewError = null
+            } catch (e: Exception) {
+                reviewError = "Ошибка загрузки отзывов: ${e.message}"
+                println("Error loading reviews: ${e.message}")
+            } finally {
+                isLoadingReviews = false
+            }
+        }
+    }
+
+    // Загружаем изображение продукта
+    LaunchedEffect(product.id) {
+        if (!isLoadingImage) {
+            isLoadingImage = true
+            try {
+                val response = RetrofitClient.instance.getProductImages(product.id)
+                val imageBitmap = ImageUtils.base64ToImageBitmap(response.image)
+                productImage = imageBitmap
+            } catch (e: Exception) {
+                println("Error loading product image: ${e.message}")
+            } finally {
+                isLoadingImage = false
+            }
+        }
+
+        // Загружаем отзывы
+        loadReviews(0)
+    }
+
+    // Используем Box для правильного позиционирования
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(CreamColor)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // Кнопка назад и заголовок
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBackClick) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Назад",
+                        tint = Color.Black
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Товар",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.Black
+                )
+            }
+
+            // Используем LazyColumn для всего контента вместо Column с verticalScroll
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 32.dp)
+            ) {
+                // Изображение товара
+                item {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(300.dp)
+                            .padding(horizontal = 16.dp)
+                            .background(Color.White, RoundedCornerShape(16.dp))
+                            .border(1.dp, Color(0xFFE0E0E0), RoundedCornerShape(16.dp))
+                    ) {
+                        if (productImage != null) {
+                            Image(
+                                bitmap = productImage!!,
+                                contentDescription = product.name,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Image(
+                                painter = painterResource(id = product.image),
+                                contentDescription = product.name,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Название товара
+                    Text(
+                        text = product.name,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                        maxLines = 2
+                    )
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Цена
+                    Text(
+                        text = "${product.price} ₽",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFC8744F),
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Параметры
+                item {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        Text(
+                            text = "Параметры",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Black,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        // Собираем параметры для отображения
+                        val parameters = mutableListOf<Pair<String, String?>>()
+
+                        if (product.width != null) {
+                            parameters.add("Ширина" to "${product.width} см")
+                        }
+                        if (product.height != null) {
+                            parameters.add("Высота" to "${product.height} см")
+                        }
+                        if (!product.color.isNullOrEmpty()) {
+                            parameters.add("Цвет" to product.color)
+                        }
+
+                        // Отображаем параметры по 2 в ряд
+                        parameters.chunked(2).forEach { rowParams ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                ParameterItem(
+                                    title = rowParams[0].first,
+                                    value = rowParams[0].second ?: "",
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                if (rowParams.size > 1) {
+                                    ParameterItem(
+                                        title = rowParams[1].first,
+                                        value = rowParams[1].second ?: "",
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                } else {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+
+                // Описание
+                if (product.description.isNotEmpty()) {
+                    item {
+                        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            Text(
+                                text = "Описание",
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Black
+                            )
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = product.description,
+                                fontSize = 16.sp,
+                                color = Color.Gray,
+                                lineHeight = 20.sp
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+                }
+
+                // Информация о наличии
+                item {
+                    Text(
+                        text = if (product.stockQuantity > 0) "✓ В наличии" else "✗ Нет в наличии",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (product.stockQuantity > 0) Color(0xFF4CAF50) else Color.Red,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Кнопка "В корзину"
+                    Button(
+                        onClick = {
+                            if (product.stockQuantity > 0) {
+                                if (isLoggedIn) {
+                                    showQuantityDialog = true
+                                } else {
+                                    showLoginRequiredDialog = true
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (product.stockQuantity > 0) Color(0xFFC8744F) else Color.Gray
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .padding(horizontal = 16.dp),
+                        enabled = product.stockQuantity > 0 && !isLoading
+                    ) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                color = Color.White,
+                                strokeWidth = 3.dp
+                            )
+                        } else {
+                            Text(
+                                if (product.stockQuantity > 0) "Добавить в корзину" else "Нет в наличии",
+                                color = Color.White,
+                                fontSize = 18.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(32.dp))
+                }
+
+                // Блок отзывов
+                item {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Отзывы",
+                                fontSize = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.Black
+                            )
+
+                            // Кнопка для написания отзыва
+                            if (isLoggedIn) {
+                                Button(
+                                    onClick = { showReviewDialog = true },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFC8744F).copy(alpha = 0.1f),
+                                        contentColor = Color(0xFFC8744F)
+                                    ),
+                                    elevation = null
+                                ) {
+                                    Text("Написать отзыв")
+                                }
+                            } else {
+                                TextButton(
+                                    onClick = onLoginRequired
+                                ) {
+                                    Text("Войдите, чтобы оставить отзыв")
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+
+                // Состояние загрузки отзывов
+                if (isLoadingReviews && reviews.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = Color(0xFFC8744F),
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                } else if (reviewError != null && reviews.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = reviewError!!,
+                                color = Color.Red,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                        }
+                    }
+                } else if (reviews.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Пока нет отзывов. Будьте первым!",
+                                color = Color.Gray,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+                        }
+                    }
+                } else {
+                    // Список отзывов
+                    items(reviews) { review ->
+                        ReviewItem(
+                            review = review,
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    // Кнопка "Показать еще" если есть еще отзывы
+                    if (hasMoreReviews) {
+                        item {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isLoadingReviews) {
+                                    CircularProgressIndicator(
+                                        color = Color(0xFFC8744F),
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                } else {
+                                    Button(
+                                        onClick = { loadReviews(currentReviewPage + 1) },
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = Color(0xFFC8744F).copy(alpha = 0.1f),
+                                            contentColor = Color(0xFFC8744F)
+                                        ),
+                                        elevation = null
+                                    ) {
+                                        Text("Показать еще")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Дополнительный отступ в конце
+                item {
+                    Spacer(modifier = Modifier.height(32.dp))
+                }
+            }
+        }
+    }
+
+    // Диалоги
+    if (showLoginRequiredDialog) {
+        AlertDialog(
+            onDismissRequest = { showLoginRequiredDialog = false },
+            title = {
+                Text(
+                    text = "Требуется авторизация",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "Для добавления товара в корзину необходимо войти в систему",
+                    fontSize = 16.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showLoginRequiredDialog = false
+                        onLoginRequired()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
+                ) {
+                    Text("Войти", color = Color.White)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showLoginRequiredDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
+                ) {
+                    Text("Отмена", color = Color.White)
+                }
+            }
+        )
+    }
+
+    if (showQuantityDialog) {
+        QuantityDialog(
+            productName = product.name,
+            maxQuantity = product.stockQuantity,
+            onDismiss = { showQuantityDialog = false },
+            onConfirm = { quantity ->
+                addToCart(quantity)
+                showQuantityDialog = false
+            }
+        )
+    }
+
+    // Диалог написания отзыва
+    if (showReviewDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isSubmittingReview) showReviewDialog = false },
+            title = {
+                Text(
+                    text = "Написать отзыв",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            },
+            text = {
+                Column {
+                    // Рейтинг звездами
+                    Text(
+                        text = "Ваша оценка:",
+                        fontSize = 16.sp,
+                        color = Color.Black,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+
+                    Row {
+                        for (i in 1..5) {
+                            Icon(
+                                imageVector = Icons.Default.Star,
+                                contentDescription = "Оценка $i",
+                                tint = if (i <= userReviewRating) Color(0xFFFFC107) else Color(0xFFE0E0E0),
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clickable { userReviewRating = i }
+                                    .padding(4.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Текст отзыва
+                    OutlinedTextField(
+                        value = userReviewText,
+                        onValueChange = { userReviewText = it },
+                        label = { Text("Ваш отзыв") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 5,
+                        minLines = 3,
+                        isError = userReviewText.isBlank() && isSubmittingReview
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        // Лямбда для отправки отзыва
+                        if (userReviewText.isNotBlank() && userReviewRating > 0) {
+                            isSubmittingReview = true
+                            coroutineScope.launch {
+                                try {
+                                    RetrofitClient.instance.createReview(
+                                        CreateReviewRequest(
+                                            productId = product.id,
+                                            text = userReviewText,
+                                            rating = userReviewRating
+                                        )
+                                    )
+
+                                    // Обновляем список отзывов
+                                    loadReviews(0)
+                                    showReviewDialog = false
+                                    userReviewText = ""
+                                    userReviewRating = 5
+                                    showReviewSuccess = true
+                                } catch (e: Exception) {
+                                    reviewError = "Ошибка отправки отзыва: ${e.message}"
+                                    println("Error submitting review: ${e.message}")
+                                } finally {
+                                    isSubmittingReview = false
+                                }
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F)),
+                    enabled = userReviewText.isNotBlank() && userReviewRating > 0 && !isSubmittingReview
+                ) {
+                    if (isSubmittingReview) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.White
+                        )
+                    } else {
+                        Text("Отправить")
+                    }
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showReviewDialog = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray),
+                    enabled = !isSubmittingReview
+                ) {
+                    Text("Отмена")
+                }
+            }
+        )
+    }
+
+    // Диалог успешной отправки отзыва
+    if (showReviewSuccess) {
+        AlertDialog(
+            onDismissRequest = { showReviewSuccess = false },
+            title = {
+                Text(
+                    text = "Спасибо!",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            },
+            text = {
+                Text("Ваш отзыв успешно отправлен")
+            },
+            confirmButton = {
+                Button(
+                    onClick = { showReviewSuccess = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFC8744F))
+                ) {
+                    Text("OK")
+                }
+            }
+        )
+    }
+}
+
+@Composable
+fun ReviewItem(
+    review: Review,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            // Заголовок с именем и датой
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = review.username,  // Теперь это строка
+                        fontWeight = FontWeight.Bold,
+                        color = Color.Black
+                    )
+                }
+
+                Text(
+                    text = formatReviewDate(review.createdAt),
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Рейтинг звездами
+            Row {
+                repeat(review.rating) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "Звезда",
+                        tint = Color(0xFFFFC107),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                repeat(5 - review.rating) {
+                    Icon(
+                        imageVector = Icons.Default.Star,
+                        contentDescription = "Пустая звезда",
+                        tint = Color(0xFFE0E0E0),
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Текст отзыва
+            Text(
+                text = review.text,
+                color = Color.Black,
+                fontSize = 14.sp,
+                lineHeight = 18.sp
+            )
+        }
+    }
+}
+
+fun formatReviewDate(dateString: String): String {
+    return try {
+        // Пробуем разные форматы дат
+        val formats = listOf(
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS", Locale.getDefault()),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.getDefault()),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.getDefault())
+        )
+
+        var date: java.util.Date? = null
+        for (format in formats) {
+            try {
+                date = format.parse(dateString)
+                break
+            } catch (e: Exception) {
+                continue
+            }
+        }
+
+        if (date != null) {
+            val outputFormat = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
+            outputFormat.format(date)
+        } else {
+            dateString
+        }
+    } catch (e: Exception) {
+        dateString
+    }
+}
+
+// Компонент для отображения одного параметра
+@Composable
+fun ParameterItem(
+    title: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+    ) {
+        // Серое название параметра
+        Text(
+            text = title,
+            fontSize = 14.sp,
+            color = Color.Gray,
+            modifier = Modifier.padding(bottom = 4.dp)
+        )
+
+        // Значение черным цветом
+        Text(
+            text = value,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = Color.Black
+        )
+    }
+}
+
 @Composable
 fun QuantityDialog(
     productName: String,
@@ -1910,7 +2961,7 @@ fun CartScreen(
                     verticalArrangement = Arrangement.Center
                 ) {
                     Icon(
-                        painter = painterResource(id = R.drawable.orders),
+                        painter = painterResource(id = R.drawable.cart),
                         contentDescription = "Корзина",
                         modifier = Modifier.size(120.dp),
                         tint = Color.Gray
@@ -2745,5 +3796,8 @@ data class Product(
     val image: Int,
     val price: Int,
     val stockQuantity: Int,
-    val rating: Float? = null // опциональный
+    val height: Int? = null, // Добавьте это поле
+    val width: Int? = null,  // Добавьте это поле
+    val color: String? = null, // Добавляем цвет
+    val averageRating: Double? = null // Добавляем рейтинг
 )
